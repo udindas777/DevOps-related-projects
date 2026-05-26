@@ -1,0 +1,125 @@
+---
+- name: Install base dependencies
+  become: yes
+  dnf:
+    name:
+      - unzip
+      - curl
+      - tar
+    state: present
+
+# ---------------- JAVA ----------------
+
+- name: Install Java 21 (RHEL 10.1 compatible)
+  become: yes
+  dnf:
+    name: java-21-openjdk
+    state: present
+
+- name: Set JAVA_HOME dynamically
+  become: yes
+  shell: |
+    echo "export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" > /etc/profile.d/java.sh
+    chmod +x /etc/profile.d/java.sh
+
+- name: Verify Java installation
+  command: java -version
+  register: java_version
+  changed_when: false
+
+- name: Show Java version
+  debug:
+    var: java_version.stderr_lines
+
+# ---------------- WILDFLY USER ----------------
+
+- name: Create wildfly user
+  user:
+    name: wildfly
+    system: yes
+    shell: /sbin/nologin
+    create_home: no
+
+# ---------------- WILDFLY DOWNLOAD ----------------
+
+- name: Download WildFly
+  get_url:
+    url: https://github.com/wildfly/wildfly/releases/download/30.0.1.Final/wildfly-30.0.1.Final.zip
+    dest: /opt/wildfly.zip
+    mode: '0644'
+
+- name: Extract WildFly
+  unarchive:
+    src: /opt/wildfly.zip
+    dest: /usr/share
+    remote_src: yes
+    creates: /usr/share/wildfly-30.0.1.Final
+
+# ---------------- PERMISSIONS (FIXED) ----------------
+
+- name: Set permissions on WildFly directory
+  file:
+    path: /usr/share/wildfly-30.0.1.Final
+    owner: wildfly
+    group: wildfly
+    recurse: yes
+
+# ---------------- SYMLINK ----------------
+
+- name: Create WildFly symlink
+  file:
+    src: /usr/share/wildfly-30.0.1.Final
+    dest: /usr/share/wildfly
+    state: link
+
+# ---------------- SYSTEMD ----------------
+
+- name: Create systemd service
+  copy:
+    dest: /etc/systemd/system/wildfly.service
+    content: |
+      [Unit]
+      Description=WildFly Application Server
+      After=network.target
+
+      [Service]
+      User=wildfly
+      Group=wildfly
+      WorkingDirectory=/usr/share/wildfly
+      ExecStart=/usr/share/wildfly/bin/standalone.sh -b 0.0.0.0
+      Restart=always
+      RestartSec=10
+      Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk"
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Enable and start WildFly
+  systemd:
+    name: wildfly
+    state: started
+    enabled: yes
+
+# ---------------- FIREWALL ----------------
+
+- name: Install firewalld
+  dnf:
+    name: firewalld
+    state: present
+
+- name: Start firewalld
+  systemd:
+    name: firewalld
+    state: started
+    enabled: yes
+
+- name: Open port 8080
+  ansible.posix.firewalld:
+    port: 8080/tcp
+    permanent: yes
+    state: enabled
+    immediate: yes
